@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"errors"
+	_ "github.com/lib/pq"
 )
 
 type state struct {
