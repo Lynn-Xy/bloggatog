@@ -6,12 +6,16 @@ import (
 	"os"
 	"errors"
 	"context"
+	"io"
+	"html"
+	"net/http"
 	"database/sql"
 	_ "github.com/lib/pq"
 	"github.com/google/uuid"
 	"github.com/Lynn-Xy/bloggatog/internal/database"
 	"log"
 	"time"
+	"encoding/xml"
 )
 
 type state struct {
@@ -26,6 +30,22 @@ type command struct {
 
 type commands struct {
 	list map[string]func(*state, command) error
+}
+
+type RSSItem struct {
+	Title string `xml:"title"`
+	Link string `xml:"link"`
+	Description string `xml:"description"`
+	PubDate string `xml:"pubDate"`
+}
+
+type RSSFeed struct {
+	Channel struct {
+		Title string `xml:"title"`
+		Link string `xml:"link"`
+		Description string `xml:"description"`
+		Item []RSSItem `xml:"item"`
+	} `xml:"channel"`
 }
 
 func (c *commands) Run(s *state, cmd command) error {
@@ -81,6 +101,48 @@ func HandlerRegister(s *state, cmd command) error {
 	return nil
 }
 
+func HandlerAddFeed(s *state, cmd command) error {
+	if len(cmd.Arguments) > 2 {
+		return errors.New("Feed name must be only one word, camelcase combinations are permitted")
+	}
+	user := s.cfg.CurrentUsername
+	if user == "guest" || user == "" {
+		return errors.New("error adding feed: no user is currently logged in")
+	}
+	dbUser, err := s.db.GetUserByName(context.Background(), user)
+	if err != nil {
+		return fmt.Errorf("error retrieving user from database: %v", err)
+	}
+	params := database.CreateFeedParams{
+		ID: uuid.New(),
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Name: sql.NullString{
+			String: cmd.Arguments[0],
+			Valid: true,
+		},
+		Url: cmd.Arguments[1],
+		UserID: dbUser.ID}
+	feed, err := s.db.CreateFeed(context.Background(), params)
+	if err != nil {
+		return fmt.Errorf("error creating feed in database: %v", err)
+	}
+	fmt.Printf(`
+	* Id: %v
+	* CreatedAt: %v
+	* UpdatedAt: %v
+	* Name: %v
+	* Url: %v
+	* UserId: %v`,
+	feed.ID,
+	feed.CreatedAt,
+	feed.UpdatedAt,
+	feed.Name,
+	feed.Url,
+	feed.UserID)
+	return nil
+}
+
 func HandlerUsers(s *state, cmd command) error {
 	users, err := s.db.GetAllUsers(context.Background())
 	if err != nil {
@@ -105,6 +167,70 @@ func HandlerReset(s *state, cmd command) error {
 	return nil
 }
 
+func HandlerAgg(s *state, cmd command) error {
+	URL := "https://www.wagslane.dev/index.xml"
+	feed, err := fetchFeed(context.Background(), URL)
+	if err != nil {
+		return fmt.Errorf("error fetching rss feed: %v", err)
+	}
+	fmt.Printf("%+v\n", *feed)
+	return nil
+}
+
+func HandlerFeeds(s *state, cmd command) error {
+	feeds, err := s.db.GetAllFeeds(context.Background())
+	if err != nil {
+		return fmt.Errorf("error retrieving feeds from database: %v", err)
+	}
+	for _, feed := range feeds {
+		fmt.Printf("* Name: %v", feed.Name)
+		fmt.Printf("* Url: %v", feed.Url)
+		user, err := s.db.GetUserNameById(context.Background(), feed.UserID)
+		if err != nil {
+			return fmt.Errorf("error retrieving user name from database: %v", err)
+		}
+		fmt.Printf("* Username: %v", user)
+	}
+	return nil
+}
+
+func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
+	newClient := &http.Client{}
+	req, err := http.NewRequestWithContext(ctx, "GET", feedURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error creating http request: %v", err)
+	}
+	req.Header.Set("User-Agent", "gator")
+	resp, err := newClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error sending http get request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("error retrieving rss feed contents: server response %v", resp.StatusCode)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading http get response body: %v", err)
+	}
+	var feed RSSFeed
+	err = xml.Unmarshal(data, &feed)
+	if err != nil {
+		return nil, fmt.Errorf("error unmarshaling http get request response body data: %v", err)
+	}
+	for idx, item := range feed.Channel.Item {
+		cleanedTitle := html.UnescapeString(item.Title)
+		feed.Channel.Item[idx].Title = cleanedTitle
+		cleanedDescription := html.UnescapeString(item.Description)
+		feed.Channel.Item[idx].Description = cleanedDescription
+	}
+	cleanedTitle := html.UnescapeString(feed.Channel.Title)
+	feed.Channel.Title = cleanedTitle
+	cleanedDescription := html.UnescapeString(feed.Channel.Description)
+	feed.Channel.Description = cleanedDescription
+	return &feed, nil
+}
+
 func main() {
 	config, err := cfg.Read()
 	if err != nil {
@@ -113,7 +239,7 @@ func main() {
 	}
 	db, err := sql.Open("postgres", config.DBURL)
 	if err != nil {
-		log.Printf("Error opening database connection: %v", err)
+		log.Printf("error opening database connection: %v", err)
 	}
 	dbQ := database.New(db)
 	s := &state{&config, dbQ}
@@ -125,6 +251,9 @@ func main() {
 	commands.Register("register", HandlerRegister)
 	commands.Register("reset", HandlerReset)
 	commands.Register("users", HandlerUsers)
+	commands.Register("agg", HandlerAgg)
+	commands.Register("addfeed", HandlerAddFeed)
+	commands.Register("feeds", HandlerFeeds)
 
 	args := os.Args
 	if len(args) < 2 {
