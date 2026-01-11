@@ -1,4 +1,4 @@
-module github.com/bloggatog
+module github.com/Lynn-Xy/bloggatog
 
 go 1.24.0
 
