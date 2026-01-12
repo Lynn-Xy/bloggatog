@@ -194,6 +194,41 @@ func HandlerFeeds(s *state, cmd command) error {
 	return nil
 }
 
+func HandlerFollow(s *state, cmd command) error {
+	url := cmd.Arguments[0]
+	feed, err := fetchFeed(context.Background(), url)
+	if err != nil {
+		return fmt.Errorf("error fetching rss feed: %v", err)
+	}
+	_, err = s.db.GetFeedByUrl(context.Background(), url)
+	if err == nil {
+		return errors.New("error following rss feed: feed already followed in database")
+	}
+	params := database.CreateFeedFollowParams{
+		ID: uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID: 
+		FeedID: 
+		FeedName: sql.NullString{
+			string: feed.Channel.Title,
+			Valid: true
+		},
+		UserName: s.cfg.CurrentUsername
+	}
+	feed_follow, err := s.db.CreateFeedFollow(context.Background(), params)
+	if err != nil {
+		return fmt.Errorsf("error creating feed_follow in database: %v", err)
+	}
+	fmt.Printf("* Feed Name: %v", feed_follow.FeedName)
+	fmt.Printf("* User Name: %v" feed_follow.UserName)
+	return nil
+}
+
+func HandlerFollowing(s *state, cmd command) error {
+
+}
+
 func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
 	newClient := &http.Client{}
 	req, err := http.NewRequestWithContext(ctx, "GET", feedURL, nil)
@@ -254,6 +289,8 @@ func main() {
 	commands.Register("agg", HandlerAgg)
 	commands.Register("addfeed", HandlerAddFeed)
 	commands.Register("feeds", HandlerFeeds)
+	commands.Register("follow", HandlerFollow)
+	commands.Register("following", Handler Following)
 
 	args := os.Args
 	if len(args) < 2 {
