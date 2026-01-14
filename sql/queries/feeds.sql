@@ -15,6 +15,11 @@ SELECT id, created_at, updated_at, name, url, user_id
 FROM feeds;
 
 -- name: GetFeedByUrl :one
-Select id, created_at, updated_at, name, url, user_id
+SELECT id, created_at, updated_at, name, url, user_id
 FROM feeds
 WHERE Url = $1;
+
+-- name: GetFeedNameByFeedID :one
+SELECT name
+FROM feeds
+WHERE id = $1;

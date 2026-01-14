@@ -92,7 +92,7 @@ func (q *Queries) GetAllFeeds(ctx context.Context) ([]Feed, error) {
 }
 
 const getFeedByUrl = `-- name: GetFeedByUrl :one
-Select id, created_at, updated_at, name, url, user_id
+SELECT id, created_at, updated_at, name, url, user_id
 FROM feeds
 WHERE Url = $1
 `
@@ -109,4 +109,17 @@ func (q *Queries) GetFeedByUrl(ctx context.Context, url string) (Feed, error) {
 		&i.UserID,
 	)
 	return i, err
+}
+
+const getFeedNameByFeedID = `-- name: GetFeedNameByFeedID :one
+SELECT name
+FROM feeds
+WHERE id = $1
+`
+
+func (q *Queries) GetFeedNameByFeedID(ctx context.Context, id uuid.UUID) (sql.NullString, error) {
+	row := q.db.QueryRowContext(ctx, getFeedNameByFeedID, id)
+	var name sql.NullString
+	err := row.Scan(&name)
+	return name, err
 }

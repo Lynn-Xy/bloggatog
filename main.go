@@ -113,7 +113,7 @@ func HandlerAddFeed(s *state, cmd command) error {
 	if err != nil {
 		return fmt.Errorf("error retrieving user from database: %v", err)
 	}
-	params := database.CreateFeedParams{
+	feedParams := database.CreateFeedParams{
 		ID: uuid.New(),
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -122,10 +122,19 @@ func HandlerAddFeed(s *state, cmd command) error {
 			Valid: true,
 		},
 		Url: cmd.Arguments[1],
-		UserID: dbUser.ID}
-	feed, err := s.db.CreateFeed(context.Background(), params)
+		UserID: dbUser.ID,
+	}
+	feed, err := s.db.CreateFeed(context.Background(), feedParams)
 	if err != nil {
 		return fmt.Errorf("error creating feed in database: %v", err)
+	}
+	feedFollowParams := database.CreateFeedFollowParams{
+		UserID: dbUser.ID,
+		FeedID: feed.ID,
+	}
+	_, err = s.db.CreateFeedFollow(context.Background(), feedFollowParams)
+	if err != nil {
+		return fmt.Errorf("error creating feed_follow in database: %v", err)
 	}
 	fmt.Printf(`
 	* Id: %v
@@ -163,7 +172,7 @@ func HandlerReset(s *state, cmd command) error {
 	if err != nil {
 		return fmt.Errorf("error deleting users from database: %v", err)
 	}
-	fmt.Print("all users deleted from database")
+	fmt.Print("all users deleted from database\n")
 	return nil
 }
 
@@ -196,37 +205,41 @@ func HandlerFeeds(s *state, cmd command) error {
 
 func HandlerFollow(s *state, cmd command) error {
 	url := cmd.Arguments[0]
-	feed, err := fetchFeed(context.Background(), url)
+	feed, err := s.db.GetFeedByUrl(context.Background(), url)
 	if err != nil {
-		return fmt.Errorf("error fetching rss feed: %v", err)
+		return fmt.Errorf("error retrieving feed from database: %v", err)
 	}
-	_, err = s.db.GetFeedByUrl(context.Background(), url)
-	if err == nil {
-		return errors.New("error following rss feed: feed already followed in database")
+	dbUser, err := s.db.GetUserByName(context.Background(), s.cfg.CurrentUsername)
+	feedFollowParams := database.CreateFeedFollowParams{
+		UserID: dbUser.ID,
+		FeedID: feed.ID,
 	}
-	params := database.CreateFeedFollowParams{
-		ID: uuid.New(),
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-		UserID: 
-		FeedID: 
-		FeedName: sql.NullString{
-			string: feed.Channel.Title,
-			Valid: true
-		},
-		UserName: s.cfg.CurrentUsername
-	}
-	feed_follow, err := s.db.CreateFeedFollow(context.Background(), params)
+	feed_follow_row, err := s.db.CreateFeedFollow(context.Background(), feedFollowParams)
 	if err != nil {
-		return fmt.Errorsf("error creating feed_follow in database: %v", err)
+		return fmt.Errorf("error creating feed_follow_row: %v", err)
 	}
-	fmt.Printf("* Feed Name: %v", feed_follow.FeedName)
-	fmt.Printf("* User Name: %v" feed_follow.UserName)
+	fmt.Printf("* Feed Name: %v", feed_follow_row.FeedName.String)
+	fmt.Printf("* User Name: %v", feed_follow_row.UserName)
 	return nil
 }
 
 func HandlerFollowing(s *state, cmd command) error {
-
+	user, err := s.db.GetUserByName(context.Background(), s.cfg.CurrentUsername)
+	if err != nil {
+		return fmt.Errorf("error retrieving user info from database: %v", err)
+	}
+	feed_follows, err := s.db.GetFeedFollowForUser(context.Background(), user.ID)
+	if err != nil {
+		return fmt.Errorf("error retrieving feed_follows from database: %v", err)
+	}
+	for _, follow := range feed_follows {
+		feedName, err := s.db.GetFeedNameByFeedID(context.Background(), follow.FeedID)
+		if err != nil {
+			return fmt.Errorf("error retrieving feed name from database: %v", err)
+		}
+		fmt.Printf("* Feed Name: %v\n", feedName.String)
+	}
+	return nil
 }
 
 func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
@@ -290,7 +303,7 @@ func main() {
 	commands.Register("addfeed", HandlerAddFeed)
 	commands.Register("feeds", HandlerFeeds)
 	commands.Register("follow", HandlerFollow)
-	commands.Register("following", Handler Following)
+	commands.Register("following", HandlerFollowing)
 
 	args := os.Args
 	if len(args) < 2 {
