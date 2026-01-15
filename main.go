@@ -76,7 +76,7 @@ func HandlerLogin(s *state, cmd command) error {
 	if err != nil {
 		return fmt.Errorf("error setting username: %v", err)
 	}
-	fmt.Printf("current user: %v has been set\n", cmd.Arguments[0])
+	fmt.Printf("current user: %v is logged in\n", cmd.Arguments[0])
 	return nil
 }
 
@@ -101,17 +101,9 @@ func HandlerRegister(s *state, cmd command) error {
 	return nil
 }
 
-func HandlerAddFeed(s *state, cmd command) error {
+func HandlerAddFeed(s *state, cmd command, user database.User) error {
 	if len(cmd.Arguments) > 2 {
 		return errors.New("Feed name must be only one word, camelcase combinations are permitted")
-	}
-	user := s.cfg.CurrentUsername
-	if user == "guest" || user == "" {
-		return errors.New("error adding feed: no user is currently logged in")
-	}
-	dbUser, err := s.db.GetUserByName(context.Background(), user)
-	if err != nil {
-		return fmt.Errorf("error retrieving user from database: %v", err)
 	}
 	feedParams := database.CreateFeedParams{
 		ID: uuid.New(),
@@ -122,14 +114,14 @@ func HandlerAddFeed(s *state, cmd command) error {
 			Valid: true,
 		},
 		Url: cmd.Arguments[1],
-		UserID: dbUser.ID,
+		UserID: user.ID,
 	}
 	feed, err := s.db.CreateFeed(context.Background(), feedParams)
 	if err != nil {
 		return fmt.Errorf("error creating feed in database: %v", err)
 	}
 	feedFollowParams := database.CreateFeedFollowParams{
-		UserID: dbUser.ID,
+		UserID: user.ID,
 		FeedID: feed.ID,
 	}
 	_, err = s.db.CreateFeedFollow(context.Background(), feedFollowParams)
@@ -203,15 +195,14 @@ func HandlerFeeds(s *state, cmd command) error {
 	return nil
 }
 
-func HandlerFollow(s *state, cmd command) error {
+func HandlerFollow(s *state, cmd command, user database.User) error {
 	url := cmd.Arguments[0]
 	feed, err := s.db.GetFeedByUrl(context.Background(), url)
 	if err != nil {
 		return fmt.Errorf("error retrieving feed from database: %v", err)
 	}
-	dbUser, err := s.db.GetUserByName(context.Background(), s.cfg.CurrentUsername)
 	feedFollowParams := database.CreateFeedFollowParams{
-		UserID: dbUser.ID,
+		UserID: user.ID,
 		FeedID: feed.ID,
 	}
 	feed_follow_row, err := s.db.CreateFeedFollow(context.Background(), feedFollowParams)
@@ -223,11 +214,7 @@ func HandlerFollow(s *state, cmd command) error {
 	return nil
 }
 
-func HandlerFollowing(s *state, cmd command) error {
-	user, err := s.db.GetUserByName(context.Background(), s.cfg.CurrentUsername)
-	if err != nil {
-		return fmt.Errorf("error retrieving user info from database: %v", err)
-	}
+func HandlerFollowing(s *state, cmd command, user database.User) error {
 	feed_follows, err := s.db.GetFeedFollowForUser(context.Background(), user.ID)
 	if err != nil {
 		return fmt.Errorf("error retrieving feed_follows from database: %v", err)
@@ -240,6 +227,33 @@ func HandlerFollowing(s *state, cmd command) error {
 		fmt.Printf("* Feed Name: %v\n", feedName.String)
 	}
 	return nil
+}
+
+func HandlerUnfollow(s *state, cmd command, user database.User) error {
+	url := cmd.Arguments[0]
+	feed, err := s.db.GetFeedByUrl(context.Background(), url)
+	if err != nil {
+		return fmt.Errorf("error retrieving feed from database: %v", err)
+	}
+	params := database.UnfollowFeedByIDParams{
+		UserID: user.ID,
+		FeedID: feed.ID,
+	}
+	err = s.db.UnfollowFeedByID(context.Background(), params)
+	if err != nil {
+		return fmt.Errorf("error unfollowing feed: %v", err)
+	}
+	return nil
+}
+
+func middlewareLoggedIn(handler func(s *state, cmd command, user database.User) error) func(*state, command) error {
+	return func(s *state, cmd command) error {
+		dbUser, err := s.db.GetUserByName(context.Background(), s.cfg.CurrentUsername)
+		if err != nil {
+			return fmt.Errorf("error retrieving username from database: %v", err)
+		}
+		return handler(s, cmd, dbUser)
+	}
 }
 
 func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
@@ -300,10 +314,11 @@ func main() {
 	commands.Register("reset", HandlerReset)
 	commands.Register("users", HandlerUsers)
 	commands.Register("agg", HandlerAgg)
-	commands.Register("addfeed", HandlerAddFeed)
+	commands.Register("addfeed", middlewareLoggedIn(HandlerAddFeed))
 	commands.Register("feeds", HandlerFeeds)
-	commands.Register("follow", HandlerFollow)
-	commands.Register("following", HandlerFollowing)
+	commands.Register("follow", middlewareLoggedIn(HandlerFollow))
+	commands.Register("following", middlewareLoggedIn(HandlerFollowing))
+	commands.Register("unfollow", middlewareLoggedIn(HandlerUnfollow))
 
 	args := os.Args
 	if len(args) < 2 {
