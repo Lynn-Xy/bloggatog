@@ -23,7 +23,7 @@ VALUES (
     $5,
     $6
 )
-RETURNING id, created_at, updated_at, name, url, user_id
+RETURNING id, created_at, updated_at, name, url, user_id, last_fetched_at
 `
 
 type CreateFeedParams struct {
@@ -52,6 +52,7 @@ func (q *Queries) CreateFeed(ctx context.Context, arg CreateFeedParams) (Feed, e
 		&i.Name,
 		&i.Url,
 		&i.UserID,
+		&i.LastFetchedAt,
 	)
 	return i, err
 }
@@ -61,15 +62,24 @@ SELECT id, created_at, updated_at, name, url, user_id
 FROM feeds
 `
 
-func (q *Queries) GetAllFeeds(ctx context.Context) ([]Feed, error) {
+type GetAllFeedsRow struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Name      sql.NullString
+	Url       string
+	UserID    uuid.UUID
+}
+
+func (q *Queries) GetAllFeeds(ctx context.Context) ([]GetAllFeedsRow, error) {
 	rows, err := q.db.QueryContext(ctx, getAllFeeds)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Feed
+	var items []GetAllFeedsRow
 	for rows.Next() {
-		var i Feed
+		var i GetAllFeedsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.CreatedAt,
@@ -97,9 +107,18 @@ FROM feeds
 WHERE Url = $1
 `
 
-func (q *Queries) GetFeedByUrl(ctx context.Context, url string) (Feed, error) {
+type GetFeedByUrlRow struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Name      sql.NullString
+	Url       string
+	UserID    uuid.UUID
+}
+
+func (q *Queries) GetFeedByUrl(ctx context.Context, url string) (GetFeedByUrlRow, error) {
 	row := q.db.QueryRowContext(ctx, getFeedByUrl, url)
-	var i Feed
+	var i GetFeedByUrlRow
 	err := row.Scan(
 		&i.ID,
 		&i.CreatedAt,
@@ -122,4 +141,52 @@ func (q *Queries) GetFeedNameByFeedID(ctx context.Context, id uuid.UUID) (sql.Nu
 	var name sql.NullString
 	err := row.Scan(&name)
 	return name, err
+}
+
+const getNextFeedToFetchByUserID = `-- name: GetNextFeedToFetchByUserID :one
+SELECT id, created_at, updated_at, name, url, user_id
+FROM feeds
+WHERE user_id = $1
+ORDER BY last_fetched_at ASC NULLS FIRST
+LIMIT 1
+`
+
+type GetNextFeedToFetchByUserIDRow struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Name      sql.NullString
+	Url       string
+	UserID    uuid.UUID
+}
+
+func (q *Queries) GetNextFeedToFetchByUserID(ctx context.Context, userID uuid.UUID) (GetNextFeedToFetchByUserIDRow, error) {
+	row := q.db.QueryRowContext(ctx, getNextFeedToFetchByUserID, userID)
+	var i GetNextFeedToFetchByUserIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Name,
+		&i.Url,
+		&i.UserID,
+	)
+	return i, err
+}
+
+const markFeedFetchedByID = `-- name: MarkFeedFetchedByID :exec
+UPDATE feeds
+SET last_fetched_at = $1, updated_at = $2
+WHERE id = $3
+`
+
+type MarkFeedFetchedByIDParams struct {
+	LastFetchedAt sql.NullTime
+	UpdatedAt     time.Time
+	ID            uuid.UUID
+}
+
+func (q *Queries) MarkFeedFetchedByID(ctx context.Context, arg MarkFeedFetchedByIDParams) error {
+	_, err := q.db.ExecContext(ctx, markFeedFetchedByID, arg.LastFetchedAt, arg.UpdatedAt, arg.ID)
+	return err
 }

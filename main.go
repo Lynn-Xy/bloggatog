@@ -169,12 +169,21 @@ func HandlerReset(s *state, cmd command) error {
 }
 
 func HandlerAgg(s *state, cmd command) error {
-	URL := "https://www.wagslane.dev/index.xml"
-	feed, err := fetchFeed(context.Background(), URL)
-	if err != nil {
-		return fmt.Errorf("error fetching rss feed: %v", err)
+	if len(cmd.Arguments) < 1 {
+		return errors.New("time string must be provided")
 	}
-	fmt.Printf("%+v\n", *feed)
+	time_between_reqs, err := time.ParseDuration(cmd.Arguments[0])
+	if err != nil {
+		return fmt.Errorf("error parsing time string argument: %v", err)
+	}
+	fmt.Printf("Collecting feeds every %v", time_between_reqs)
+	tick := time.NewTicker(time_between_reqs)
+	for ; ; <-tick.C {
+		err := scrapeFeeds(s)
+		if err != nil {
+			log.Printf("error scraping feeds: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -291,6 +300,39 @@ func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
 	cleanedDescription := html.UnescapeString(feed.Channel.Description)
 	feed.Channel.Description = cleanedDescription
 	return &feed, nil
+}
+
+func scrapeFeeds(s *state) error {
+	username := s.cfg.CurrentUsername
+	if username == "guest" || username == "" {
+		return errors.New("no user currently logged in")
+	}
+	ctx := context.Background()
+	user, err := s.db.GetUserByName(ctx, username)
+	if err != nil { return fmt.Errorf("error retrieving user from database: %v", err)
+	}
+	feedRow, err := s.db.GetNextFeedToFetchByUserID(ctx, user.ID)
+	if err != nil {
+		return fmt.Errorf("error retrieving next feed from database: %v", err)
+	}
+	params := MarkFeedFetchedByIDParams{
+		LastFetchedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		ID: feedRow.ID,
+	}
+	err = s.db.MarkFeedFetchedByID(ctx, params)
+	if err != nil {
+		return fmt.Errorf("error marking feed fetched: %v", err)
+	}
+	url := feedRow.Url
+	RSSfeed, err := fetchFeed(ctx, url)
+	if err != nil {
+		return fmt.Errorf("error fetching feed from url: %v - %v", url, err)
+	}
+	for _, item := range RSSfeed.Channel.Item {
+		fmt.Printf("* Feed Item: %v\n", item.Title)
+	}
+	return nil
 }
 
 func main() {
