@@ -16,6 +16,7 @@ import (
 	"log"
 	"time"
 	"encoding/xml"
+	"strconv"
 )
 
 type state struct {
@@ -255,6 +256,27 @@ func HandlerUnfollow(s *state, cmd command, user database.User) error {
 	return nil
 }
 
+func HandlerBrowse(s *state, cmd command, user database.User) error {
+	var limit int32
+	if len(cmd.Arguments) < 1 {
+		limit = 2
+	} else {
+		limit = int32(strconv.Atoi(cmd.Arguments[0])
+	}
+	params :=  database.GetXPostsByUserIDParams{
+		ID: user.ID,
+		Limit: limit,
+	}
+	posts, err := s.db.GetXPostsByUserID(context.Background(), params)
+	if err != nil {
+		return fmt.Errorf("error retrieving posts from database: %v", err)
+	}
+	for _, post := range posts {
+		fmt.Printf("* Post: %+v\n", post)
+	}
+	return nil
+}
+
 func middlewareLoggedIn(handler func(s *state, cmd command, user database.User) error) func(*state, command) error {
 	return func(s *state, cmd command) error {
 		dbUser, err := s.db.GetUserByName(context.Background(), s.cfg.CurrentUsername)
@@ -330,7 +352,32 @@ func scrapeFeeds(s *state) error {
 		return fmt.Errorf("error fetching feed from url: %v - %v", url, err)
 	}
 	for _, item := range RSSfeed.Channel.Item {
-		fmt.Printf("* Feed Item: %v\n", item.Title)
+		date, err := time.Parse(DateOnly, item.PubDate)
+		if err != nil {
+			log.Printf("error parsing publication date: %v", err)
+			date = time.Now().UTC()
+		}
+		postParams := CreatePostParams{
+			ID: uuid.New(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			Title: sql.NullString{
+				String: item.Title,
+				Valid: true,
+			},
+			Url: item.Link,
+			Description: sql.NullString{
+				String: item.Description,
+				Valid: true,
+			},
+			PublishedAt: date,
+			FeedID: feedRow.ID,
+		}
+
+		err = s.db.CreatePost(ctx, postParams)
+		if err != nil && strings.Contains(err.Error(), "unique") == false {
+			log.Printf("error creating post in database: %v", err)
+		}
 	}
 	return nil
 }
@@ -361,6 +408,7 @@ func main() {
 	commands.Register("follow", middlewareLoggedIn(HandlerFollow))
 	commands.Register("following", middlewareLoggedIn(HandlerFollowing))
 	commands.Register("unfollow", middlewareLoggedIn(HandlerUnfollow))
+	commands.Register("browser", middlewareLoggedIn(HandlerBrowse))
 
 	args := os.Args
 	if len(args) < 2 {
